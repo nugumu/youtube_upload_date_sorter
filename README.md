@@ -16,10 +16,10 @@ Google Cloud で YouTube Data API v3 を有効化し、APIキーを取得して�
 ## 動かし方（Mac / Windows 共通）
 
 ### (1) ZIP を展開
-このリポジトリ（ZIP）を任意の場所に展開して、コンソールでフォルダに移動します。
+このリポジトリ（ZIP）を任意の場所に展開して、コンソールから当該フォルダに移動します。
 
 ```bash
-cd youtube_apload_date_sorter
+cd youtube_upload_date_sorter
 ```
 
 ### (2) 仮想環境を作る（必須ではないが推奨）
