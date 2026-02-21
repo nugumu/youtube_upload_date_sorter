@@ -42,7 +42,7 @@ pip install -r requirements.txt
 
 ### (4) 起動
 ```bash
-streamlit run main.py
+streamlit run app.py
 ```
 
 ブラウザが開きます。上部の入力欄にAPIキーと検索ワードを入れて「検索」を押してください。
