@@ -41,6 +41,9 @@ class YouTubeSearchClient:
     def __init__(self, api_key: str, timeout_s: int = 30) -> None:
         self.api_key = api_key
         self.timeout_s = timeout_s
+        # Populated after each `search_videos` call to help diagnose
+        # "0 results" situations when client-side filtering is enabled.
+        self.last_debug: Dict[str, Any] = {}
 
     def search_videos(
         self,
@@ -68,6 +71,13 @@ class YouTubeSearchClient:
         results: List[VideoResult] = []
         page_token: Optional[str] = None
         page_count = 0
+
+        # Debug counters (useful when filtering produces 0 results)
+        candidates_seen = 0
+        viewcount_found = 0
+        viewcount_missing = 0
+        # For a quick sense of distribution (up to ~500 values)
+        all_view_counts: List[int] = []
 
         # When view-count filtering is enabled, we may need more candidates than `total_results`.
         need_more_candidates = (view_count_min is not None) or (
@@ -97,8 +107,10 @@ class YouTubeSearchClient:
                 params["regionCode"] = region_code
             if relevance_language:
                 params["relevanceLanguage"] = relevance_language
-            if safe_search and safe_search != "none":
-                params["safeSearch"] = safe_search  # moderate|strict
+            # Explicitly pass safeSearch so UI selection matches API behavior.
+            # Allowed values include: none | moderate | strict
+            if safe_search:
+                params["safeSearch"] = safe_search
             if video_duration and video_duration != "any":
                 params["videoDuration"] = video_duration  # short|medium|long
             if video_definition and video_definition != "any":
@@ -164,11 +176,19 @@ class YouTubeSearchClient:
             if not candidates:
                 break
 
+            candidates_seen += len(candidates)
+
             # Fetch viewCount for this page (max 50 ids)
             view_counts = self._fetch_view_counts(candidate_ids)
 
             for c in candidates:
                 c.view_count = view_counts.get(c.video_id)
+
+                if c.view_count is None:
+                    viewcount_missing += 1
+                else:
+                    viewcount_found += 1
+                    all_view_counts.append(c.view_count)
 
                 if view_count_min is not None:
                     if c.view_count is None or c.view_count < view_count_min:
@@ -184,6 +204,31 @@ class YouTubeSearchClient:
             page_token = data.get("nextPageToken")
             if not page_token:
                 break
+
+        # Store debug info for UI
+        vc_sorted = sorted(all_view_counts)
+
+        def _q(p: float) -> Optional[int]:
+            if not vc_sorted:
+                return None
+            i = int(round((len(vc_sorted) - 1) * p))
+            return vc_sorted[max(0, min(len(vc_sorted) - 1, i))]
+
+        self.last_debug = {
+            "q": q,
+            "pages_fetched": page_count,
+            "candidates_seen": candidates_seen,
+            "viewcount_found": viewcount_found,
+            "viewcount_missing": viewcount_missing,
+            "viewcount_min": vc_sorted[0] if vc_sorted else None,
+            "viewcount_p10": _q(0.10),
+            "viewcount_median": _q(0.50),
+            "viewcount_p90": _q(0.90),
+            "viewcount_max": vc_sorted[-1] if vc_sorted else None,
+            "filter_view_count_min": view_count_min,
+            "filter_view_count_max": view_count_max,
+            "results_returned": len(results),
+        }
 
         return results
 
