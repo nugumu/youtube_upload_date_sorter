@@ -40,6 +40,8 @@ if submitted:
                 channel_id=filters["channel_id"],
                 published_after=filters["published_after"],
                 published_before=filters["published_before"],
+                view_count_min=filters["view_count_min"],
+                view_count_max=filters["view_count_max"],
             )
         except YouTubeAPIError as e:
             st.error(f"APIエラー: {e}")
