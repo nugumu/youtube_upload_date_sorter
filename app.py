@@ -5,7 +5,9 @@ from src.ui import render_results, top_search_bar, advanced_filters_expander
 st.set_page_config(page_title="YouTube 日付順検索", layout="wide")
 
 st.title("YouTube 日付順検索")
-st.caption("YouTube Data API v3 を使って、検索結果を「アップロード日時が新しい順」で表示します。")
+st.caption(
+    "YouTube Data API v3 を使って、検索結果を「アップロード日時が新しい順」で表示します。"
+)
 
 # TOP表示項目
 api_key, query, submitted = top_search_bar()
