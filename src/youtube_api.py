@@ -6,6 +6,7 @@ import requests
 
 
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
+YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 WATCH_URL = "https://www.youtube.com/watch?v="
 EMBED_URL = "https://www.youtube.com/embed/"
 
@@ -14,16 +15,17 @@ class YouTubeAPIError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True)
+@dataclass
 class VideoResult:
     video_id: str
     title: str
     channel_title: str
-    published_at: str  # RFC3339 string
+    published_at: str  # RFC3339 string (usually ends with 'Z')
     description: str
     url: str
     embed_url: str
     thumbnail_url: Optional[str]
+    view_count: Optional[int] = None
 
 
 class YouTubeSearchClient:
@@ -33,6 +35,7 @@ class YouTubeSearchClient:
     Notes:
         - order is fixed to 'date' (newest-first).
         - search.list returns up to 50 per request; we page until total_results (capped).
+        - viewCount filtering is done client-side via videos.list(part=statistics).
     """
 
     def __init__(self, api_key: str, timeout_s: int = 30) -> None:
@@ -53,23 +56,38 @@ class YouTubeSearchClient:
         channel_id: Optional[str] = None,
         published_after: Optional[str] = None,
         published_before: Optional[str] = None,
+        view_count_min: Optional[int] = None,
+        view_count_max: Optional[int] = None,
     ) -> List[VideoResult]:
         if total_results < 1:
             return []
 
-        total_results = min(total_results, 500)  # 上限は500件（10ページ）
-        per_page = 50
+        # YouTube Search API hard-cap: 500 results (10 pages)
+        total_results = min(total_results, 500)
 
-        items: List[VideoResult] = []
+        results: List[VideoResult] = []
         page_token: Optional[str] = None
+        page_count = 0
 
-        while len(items) < total_results:
-            batch_size = min(per_page, total_results - len(items))
+        # When view-count filtering is enabled, we may need more candidates than `total_results`.
+        need_more_candidates = (view_count_min is not None) or (
+            view_count_max is not None
+        )
+
+        while len(results) < total_results:
+            page_count += 1
+            if page_count > 10:
+                break  # 500 results max via search.list paging
+
+            batch_size = (
+                50 if need_more_candidates else min(50, total_results - len(results))
+            )
+
             params: Dict[str, Any] = {
                 "part": "snippet",
                 "type": "video",
                 "q": q,
-                "order": "date",  # 必ず日付順で表示
+                "order": "date",  # newest-first
                 "maxResults": batch_size,
                 "key": self.api_key,
             }
@@ -92,9 +110,9 @@ class YouTubeSearchClient:
             if channel_id:
                 params["channelId"] = channel_id
             if published_after:
-                params["publishedAfter"] = published_after  # この日以後
+                params["publishedAfter"] = published_after
             if published_before:
-                params["publishedBefore"] = published_before  # この日以前
+                params["publishedBefore"] = published_before
 
             if page_token:
                 params["pageToken"] = page_token
@@ -106,6 +124,10 @@ class YouTubeSearchClient:
             data = r.json()
             if "error" in data:
                 raise YouTubeAPIError(str(data["error"]))
+
+            # Build candidates for this page
+            candidates: List[VideoResult] = []
+            candidate_ids: List[str] = []
 
             for it in data.get("items", []):
                 vid = (it.get("id") or {}).get("videoId")
@@ -124,7 +146,7 @@ class YouTubeSearchClient:
                         thumb_url = thumbs[k]["url"]
                         break
 
-                items.append(
+                candidates.append(
                     VideoResult(
                         video_id=vid,
                         title=sn.get("title") or "",
@@ -136,9 +158,69 @@ class YouTubeSearchClient:
                         thumbnail_url=thumb_url,
                     )
                 )
+                candidate_ids.append(vid)
+
+            # No more results
+            if not candidates:
+                break
+
+            # Fetch viewCount for this page (max 50 ids)
+            view_counts = self._fetch_view_counts(candidate_ids)
+
+            for c in candidates:
+                c.view_count = view_counts.get(c.video_id)
+
+                if view_count_min is not None:
+                    if c.view_count is None or c.view_count < view_count_min:
+                        continue
+                if view_count_max is not None:
+                    if c.view_count is None or c.view_count > view_count_max:
+                        continue
+
+                results.append(c)
+                if len(results) >= total_results:
+                    break
 
             page_token = data.get("nextPageToken")
             if not page_token:
                 break
 
-        return items
+        return results
+
+    def _fetch_view_counts(self, video_ids: List[str]) -> Dict[str, int]:
+        """
+        Fetch statistics.viewCount for up to 50 video IDs via videos.list.
+
+        Returns:
+            {videoId: viewCount_int}
+        """
+        if not video_ids:
+            return {}
+
+        params: Dict[str, Any] = {
+            "part": "statistics",
+            "id": ",".join(video_ids[:50]),
+            "key": self.api_key,
+        }
+
+        r = requests.get(YOUTUBE_VIDEOS_URL, params=params, timeout=self.timeout_s)
+        if r.status_code != 200:
+            raise YouTubeAPIError(f"HTTP {r.status_code}: {r.text}")
+
+        data = r.json()
+        if "error" in data:
+            raise YouTubeAPIError(str(data["error"]))
+
+        out: Dict[str, int] = {}
+        for it in data.get("items", []):
+            vid = it.get("id")
+            stats = it.get("statistics") or {}
+            vc = stats.get("viewCount")
+            if vid and vc is not None:
+                try:
+                    out[str(vid)] = int(vc)
+                except Exception:
+                    # ignore unparsable
+                    pass
+
+        return out

@@ -49,6 +49,10 @@ streamlit run app.py
 
 ## 使い方・補足
 
+### 検索結果表示
+- 投稿日時は **日本時間（JST）** で表示します
+- 各動画の **再生数（viewCount）** を表示します
+
 ### 検索条件（詳細）
 入力欄の下にある「検索条件（詳細）」を開くと、次が指定できます（任意）：
 - 取得件数（最大500）
@@ -56,6 +60,7 @@ streamlit run app.py
 - safeSearch
 - videoDuration / videoDefinition / videoType / eventType
 - channelId（特定チャンネル内検索）
-- publishedAfter / publishedBefore（RFC3339形式）
+- 再生数フィルタ（下限 / 上限）
+- 期間指定（開始 / 終了、日本時間/JST）
 
-RFC3339例: `2024-01-01T00:00:00Z`
+※ 再生数フィルタは YouTube Data API 側で直接絞り込めないため、検索結果（候補）取得後に videos.list で再生数を取ってアプリ側でフィルタします。
