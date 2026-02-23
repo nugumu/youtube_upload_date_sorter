@@ -2,10 +2,20 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 from datetime import date, time, datetime, timezone, timedelta
+from pathlib import Path
 
 import streamlit as st
 
 from src.youtube_api import VideoResult
+from src.snapshot import (
+    build_snapshot_payload,
+    default_snapshot_stem,
+    load_snapshot_payload,
+    payload_to_video_results,
+    save_snapshot_files,
+    snapshot_csv_bytes,
+    snapshot_json_bytes,
+)
 
 _JST = timezone(timedelta(hours=9))
 
@@ -30,7 +40,7 @@ def top_search_bar():
 def advanced_filters_expander() -> Dict[str, object]:
     with st.expander("検索条件（詳細）", expanded=False):
         total_results = st.slider(
-            "取得件数（最大500）", min_value=10, max_value=500, value=50, step=10
+            "取得件数（取りすぎ注意）", min_value=100, max_value=5000, value=200, step=10
         )
 
         col1, col2, col3 = st.columns(3)
@@ -209,6 +219,208 @@ def render_results(results: List[VideoResult]) -> None:
                     st.write(_truncate(desc, 180))
                 else:
                     st.write("")
+
+
+def render_snapshot_viewer() -> None:
+    """Load and re-display saved snapshots (JSON/CSV)."""
+
+    st.divider()
+    with st.expander("スナップショットを読み込んで表示", expanded=False):
+        st.caption("保存済みのスナップショット（JSON/CSV）を読み込んで再表示します。")
+
+        mode = st.radio(
+            "読み込み方法",
+            options=["アップロード", "ローカルフォルダから選択"],
+            horizontal=True,
+            index=0,
+        )
+
+        raw: Optional[bytes] = None
+        name: str = ""
+
+        if mode == "アップロード":
+            up = st.file_uploader(
+                "スナップショットファイル",
+                type=["json", "csv"],
+                accept_multiple_files=False,
+                key="snap_uploader",
+            )
+            if up is None:
+                st.info("JSON/CSVをアップロードすると、検索結果を再表示できます。")
+                return
+            raw = up.getvalue()
+            name = up.name
+        else:
+            st.caption(
+                "※ Streamlit Cloud等ではサーバ側のファイルになります。基本はアップロード推奨です。"
+            )
+            folder = st.text_input(
+                "参照フォルダ",
+                value="snapshots",
+                key="snap_load_dir",
+                help="保存先と同じフォルダを指定してください（例: snapshots）",
+            )
+            try:
+                p = Path(folder).expanduser().resolve()
+                files = []
+                if p.exists() and p.is_dir():
+                    files = sorted(
+                        [
+                            f
+                            for f in p.iterdir()
+                            if f.is_file() and f.suffix.lower() in (".json", ".csv")
+                        ],
+                        key=lambda x: x.stat().st_mtime,
+                        reverse=True,
+                    )
+                if not files:
+                    st.warning(
+                        "指定フォルダにスナップショット（.json/.csv）が見つかりません。"
+                    )
+                    return
+                chosen = st.selectbox(
+                    "ファイルを選択（更新日時が新しい順）",
+                    options=files,
+                    format_func=lambda x: x.name,
+                    key="snap_load_file",
+                )
+                if st.button(
+                    "このファイルを読み込む", type="primary", key="snap_load_btn"
+                ):
+                    raw = chosen.read_bytes()
+                    name = chosen.name
+                else:
+                    return
+            except Exception as e:
+                st.error(f"ローカルフォルダからの読み込みに失敗しました: {e}")
+                return
+
+        if raw is None:
+            return
+
+        try:
+            payload = load_snapshot_payload(raw=raw, filename=name)
+        except Exception as e:
+            st.error(f"スナップショットの読み込みに失敗しました: {e}")
+            return
+
+        meta = payload.get("meta") or {}
+        st.markdown("**メタ情報**")
+        st.json(
+            {
+                "query": meta.get("query"),
+                "created_at_jst": meta.get("created_at_jst"),
+                "results_count": meta.get("results_count"),
+                "filters": meta.get("filters"),
+            }
+        )
+
+        results = payload_to_video_results(payload)
+        if not results:
+            st.warning("スナップショット内に表示できる動画がありません。")
+            return
+
+        # Keep the same rendering style as live results.
+        st.caption(
+            "以下はスナップショットから復元した表示です（APIアクセスは行いません）。"
+        )
+        render_results(results)
+
+
+def render_snapshot_tools(
+    results: List[VideoResult],
+    *,
+    query: str,
+    filters: Dict[str, object],
+    debug: Optional[Dict[str, object]] = None,
+) -> None:
+    """Render snapshot save/download UI for the current results."""
+
+    st.divider()
+    with st.expander("スナップショット保存", expanded=False):
+        st.caption(
+            "この検索結果を JSON/CSV として保存します。"
+            "（Streamlitをローカルで動かしている場合はPC上のフォルダに保存されます）"
+        )
+
+        include_desc = st.checkbox(
+            "説明文（description）も含める", value=True, key="snap_include_desc"
+        )
+
+        stem_default = default_snapshot_stem(query=query)
+        stem = st.text_input(
+            "ファイル名（拡張子なし）",
+            value=stem_default,
+            key="snap_stem",
+            help="例: snapshot_20260223_123045_music",
+        )
+
+        formats = st.multiselect(
+            "保存形式",
+            options=["json", "csv"],
+            default=["json", "csv"],
+            key="snap_formats",
+        )
+
+        payload = build_snapshot_payload(
+            results=results,
+            query=query,
+            filters=filters,
+            debug=debug,
+        )
+
+        if not include_desc:
+            for it in payload.get("items") or []:
+                it["description"] = ""
+
+        dcol1, dcol2 = st.columns(2)
+        with dcol1:
+            if "json" in formats:
+                st.download_button(
+                    label="JSONをダウンロード",
+                    data=snapshot_json_bytes(payload),
+                    file_name=f"{stem}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+            else:
+                st.button("JSONをダウンロード", disabled=True, use_container_width=True)
+
+        with dcol2:
+            if "csv" in formats:
+                st.download_button(
+                    label="CSVをダウンロード",
+                    data=snapshot_csv_bytes(payload, include_description=include_desc),
+                    file_name=f"{stem}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            else:
+                st.button("CSVをダウンロード", disabled=True, use_container_width=True)
+
+        st.markdown("**ローカルに保存**")
+        out_dir = st.text_input(
+            "保存先フォルダ",
+            value="snapshots",
+            key="snap_out_dir",
+            help="相対パスの場合、アプリを起動したフォルダ配下に作成します。例: snapshots",
+        )
+
+        if st.button("保存する", type="primary", key="snap_save"):
+            if not formats:
+                st.warning("保存形式が未選択です。")
+            else:
+                try:
+                    saved = save_snapshot_files(
+                        payload=payload,
+                        out_dir=out_dir,
+                        base_name=stem,
+                        formats=formats,
+                        include_description_csv=include_desc,
+                    )
+                    st.success("保存しました:\n" + "\n".join(saved))
+                except Exception as e:
+                    st.error(f"保存に失敗しました: {e}")
 
 
 def _to_rfc3339_jst(d: date, t: time) -> str:
