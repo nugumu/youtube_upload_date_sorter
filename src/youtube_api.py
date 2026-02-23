@@ -116,7 +116,11 @@ class YouTubeSearchClient:
                 thumbs = sn.get("thumbnails") or {}
                 thumb_url = None
                 for k in ("high", "medium", "default"):
-                    if k in thumbs and isinstance(thumbs[k], dict) and thumbs[k].get("url"):
+                    if (
+                        k in thumbs
+                        and isinstance(thumbs[k], dict)
+                        and thumbs[k].get("url")
+                    ):
                         thumb_url = thumbs[k]["url"]
                         break
 

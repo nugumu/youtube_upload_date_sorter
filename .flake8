@@ -1,0 +1,5 @@
+[flake8]
+max-line-length = 130
+extend-ignore = E203, W503
+# Exclude common generated/virtualenv dirs
+exclude = .git,__pycache__,.venv,venv,build,dist
