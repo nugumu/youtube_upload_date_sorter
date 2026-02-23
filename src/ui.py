@@ -40,7 +40,11 @@ def top_search_bar():
 def advanced_filters_expander() -> Dict[str, object]:
     with st.expander("検索条件（詳細）", expanded=False):
         total_results = st.slider(
-            "取得件数（取りすぎ注意）", min_value=100, max_value=5000, value=200, step=10
+            "取得件数（取りすぎ注意）",
+            min_value=100,
+            max_value=5000,
+            value=200,
+            step=10,
         )
 
         col1, col2, col3 = st.columns(3)
